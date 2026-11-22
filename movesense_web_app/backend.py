@@ -123,6 +123,7 @@ class MotionSample(BaseModel):
     x: float = Field(ge=-1000, le=1000)
     y: float = Field(ge=-1000, le=1000)
     z: float = Field(ge=-1000, le=1000)
+    includes_gravity: bool = False
     alpha: float = Field(default=0, ge=-10000, le=10000)
     beta: float = Field(default=0, ge=-10000, le=10000)
     gamma: float = Field(default=0, ge=-10000, le=10000)
@@ -143,14 +144,17 @@ class SessionTracker:
         self.steps = 0
         self.peaks = 0
         self.smoothed = 0.0
-        self._last_dynamic = 0.0
-        self._last_peak_at = 0.0
-        self._magnitudes: deque[float] = deque(maxlen=18)
+        self._last_peak_at: float | None = None
+        self._peak_times: deque[float] = deque(maxlen=6)
+        self._cadence_intervals = 0
+        self._start_time = 0.0
         self._gravity = {"x": 0.0, "y": 0.0, "z": 9.8}
         self._gravity_samples = 0
-        self._activity_candidate = "Idle"
-        self._activity_candidate_count = 0
-        self._start_time = 0.0
+        self._previous_smoothed = 0.0
+        self._previous_previous_smoothed = 0.0
+        self._previous_sample_at = 0.0
+        self._previous_previous_sample_at = 0.0
+        self._trough_since_peak = 0.0
         self.samples: deque[dict[str, Any]] = deque(maxlen=80)
         self.activity = "Idle"
         self.latest = {"x": 0.0, "y": 0.0, "z": 0.0, "alpha": 0.0, "beta": 0.0, "gamma": 0.0}
@@ -168,14 +172,17 @@ class SessionTracker:
             self.steps = 0
             self.peaks = 0
             self.smoothed = 0.0
-            self._last_dynamic = 0.0
-            self._last_peak_at = 0.0
-            self._magnitudes.clear()
+            self._last_peak_at = None
+            self._peak_times.clear()
+            self._cadence_intervals = 0
             self._gravity = {"x": 0.0, "y": 0.0, "z": 9.8}
             self._gravity_samples = 0
-            self._activity_candidate = "Idle"
-            self._activity_candidate_count = 0
             self._start_time = time.monotonic()
+            self._previous_smoothed = 0.0
+            self._previous_previous_smoothed = 0.0
+            self._previous_sample_at = self._start_time
+            self._previous_previous_sample_at = self._start_time
+            self._trough_since_peak = 0.0
             self.samples.clear()
             self.activity = "Monitoring"
             self.last_error = ""
@@ -185,72 +192,49 @@ class SessionTracker:
             if not self.active:
                 raise HTTPException(status_code=409, detail="No sensor session is active.")
             self.latest = sample.model_dump()
-            magnitude = math.sqrt(sample.x**2 + sample.y**2 + sample.z**2)
             now = time.monotonic()
 
-            # Adapt a gravity baseline to phone orientation.  This keeps a phone held
-            # vertically or horizontally from being mistaken for constant motion.
-            if self._gravity_samples < 25:
-                alpha = 0.35
-                self._gravity["x"] = self._gravity["x"] * (1 - alpha) + sample.x * alpha
-                self._gravity["y"] = self._gravity["y"] * (1 - alpha) + sample.y * alpha
-                self._gravity["z"] = self._gravity["z"] * (1 - alpha) + sample.z * alpha
+            if sample.includes_gravity:
+                alpha = 0.12 if self._gravity_samples < 20 else 0.015
+                self._gravity["x"] += alpha * (sample.x - self._gravity["x"])
+                self._gravity["y"] += alpha * (sample.y - self._gravity["y"])
+                self._gravity["z"] += alpha * (sample.z - self._gravity["z"])
                 self._gravity_samples += 1
+                dx = sample.x - self._gravity["x"]
+                dy = sample.y - self._gravity["y"]
+                dz = sample.z - self._gravity["z"]
+                dynamic = math.sqrt(dx * dx + dy * dy + dz * dz)
             else:
-                alpha = 0.015
-                self._gravity["x"] = self._gravity["x"] * (1 - alpha) + sample.x * alpha
-                self._gravity["y"] = self._gravity["y"] * (1 - alpha) + sample.y * alpha
-                self._gravity["z"] = self._gravity["z"] * (1 - alpha) + sample.z * alpha
+                dynamic = math.sqrt(sample.x**2 + sample.y**2 + sample.z**2)
 
-            dx = sample.x - self._gravity["x"]
-            dy = sample.y - self._gravity["y"]
-            dz = sample.z - self._gravity["z"]
-            vector_dynamic = math.sqrt(dx * dx + dy * dy + dz * dz)
-            # Before the baseline is calibrated, use the total-magnitude deviation
-            # so the first movement samples still contribute to the estimate.
-            dynamic = (
-                abs(magnitude - 9.8)
-                if self._gravity_samples < 25
-                else vector_dynamic
-            )
-            self.smoothed = self.smoothed * 0.72 + dynamic * 0.28
-
-            step_threshold = 1.15
+            self.smoothed = self.smoothed * 0.7 + dynamic * 0.3
             if (
-                self.smoothed > step_threshold
-                and self._last_dynamic <= step_threshold
-                and now - self._last_peak_at > 0.32
+                self._previous_smoothed >= self._previous_previous_smoothed
+                and self._previous_smoothed > self.smoothed
+                and self._previous_smoothed >= 1.2
+                and self._previous_smoothed - self._trough_since_peak >= 0.55
             ):
-                self.steps += 1
-                self.peaks += 1
-                self._last_peak_at = now
-            self._last_dynamic = dynamic
-            self._magnitudes.append(dynamic)
-
-            variation = sum(self._magnitudes) / len(self._magnitudes)
-            if self._gravity_samples < 25:
-                candidate = "Monitoring"
-            elif variation < 0.35 and self.steps == 0:
-                candidate = "Idle"
-            elif variation >= 2.2:
-                candidate = "Running"
-            elif variation >= 0.45 or self.steps > 0:
-                candidate = "Walking"
+                peak_at = self._previous_sample_at
+                if self._last_peak_at is None or peak_at - self._last_peak_at >= 0.28:
+                    self._record_peak(peak_at)
+                self._trough_since_peak = self.smoothed
             else:
-                candidate = "Idle"
-
-            if candidate == self._activity_candidate:
-                self._activity_candidate_count += 1
+                self._trough_since_peak = min(self._trough_since_peak, self.smoothed)
+            self._previous_previous_smoothed = self._previous_smoothed
+            self._previous_smoothed = self.smoothed
+            self._previous_previous_sample_at = self._previous_sample_at
+            self._previous_sample_at = now
+            elapsed = now - self._start_time
+            if elapsed < 1.5:
+                self.activity = "Monitoring"
+            elif self._cadence_intervals >= 2 and self._last_peak_at is not None:
+                if now - self._last_peak_at > 1.6:
+                    self.activity = "Idle"
+                else:
+                    interval = self._peak_times[-1] - self._peak_times[-2]
+                    self.activity = "Running" if interval < 0.4 else "Walking"
             else:
-                self._activity_candidate = candidate
-                self._activity_candidate_count = 1
-
-            required = 22 if candidate == "Idle" else 6
-            if (
-                candidate != "Monitoring"
-                and self._activity_candidate_count >= required
-            ):
-                self.activity = candidate
+                self.activity = "Idle"
             self.samples.append(
                 {
                     "time": datetime.now().astimezone().strftime("%H:%M:%S"),
@@ -258,6 +242,22 @@ class SessionTracker:
                 }
             )
             return self.snapshot()
+
+    def _record_peak(self, now: float) -> None:
+        if self._peak_times:
+            interval = now - self._peak_times[-1]
+            if 0.3 <= interval <= 1.25:
+                self._cadence_intervals += 1
+                if self._cadence_intervals == 2:
+                    self.steps += 3
+                elif self._cadence_intervals > 2:
+                    self.steps += 1
+            else:
+                self._peak_times.clear()
+                self._cadence_intervals = 0
+        self._peak_times.append(now)
+        self._last_peak_at = now
+        self.peaks = self._cadence_intervals
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

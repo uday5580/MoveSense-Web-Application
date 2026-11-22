@@ -27,12 +27,20 @@
   }
 
   function onMotion(event) {
-    const acceleration = event.acceleration || event.accelerationIncludingGravity || {};
+    const linearAcceleration = event.acceleration;
+    const hasLinearAcceleration = linearAcceleration
+      && Number.isFinite(linearAcceleration.x)
+      && Number.isFinite(linearAcceleration.y)
+      && Number.isFinite(linearAcceleration.z);
+    const acceleration = hasLinearAcceleration
+      ? linearAcceleration
+      : event.accelerationIncludingGravity || {};
     const rotation = event.rotationRate || {};
     latestSample = {
-      x: acceleration.x || 0,
-      y: acceleration.y || 0,
-      z: acceleration.z || 0,
+      x: Number.isFinite(acceleration.x) ? acceleration.x : 0,
+      y: Number.isFinite(acceleration.y) ? acceleration.y : 0,
+      z: Number.isFinite(acceleration.z) ? acceleration.z : 0,
+      includes_gravity: !hasLinearAcceleration,
       alpha: rotation.alpha || 0,
       beta: rotation.beta || 0,
       gamma: rotation.gamma || 0,
