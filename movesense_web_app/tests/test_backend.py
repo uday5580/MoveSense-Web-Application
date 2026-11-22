@@ -89,6 +89,37 @@ class SessionTrackerTests(unittest.TestCase):
         self.assertGreater(snapshot["steps"], 0)
         self.assertEqual(snapshot["activity"], "Walking")
 
+    def test_lower_amplitude_repeated_steps_are_counted(self) -> None:
+        tracker = SessionTracker()
+        snapshot = self.run_with_clock(
+            tracker,
+            [
+                MotionSample(
+                    x=1.0 * math.sin(index * 2 * math.pi / 12),
+                    y=0,
+                    z=0,
+                )
+                for index in range(100)
+            ],
+        )
+        self.assertGreater(snapshot["steps"], 0)
+
+    def test_lower_amplitude_steps_with_gravity_are_counted(self) -> None:
+        tracker = SessionTracker()
+        snapshot = self.run_with_clock(
+            tracker,
+            [
+                MotionSample(
+                    x=1.0 * math.sin(index * 2 * math.pi / 12),
+                    y=0,
+                    z=9.8,
+                    includes_gravity=True,
+                )
+                for index in range(100)
+            ],
+        )
+        self.assertGreater(snapshot["steps"], 0)
+
     def test_isolated_motion_spikes_do_not_count_as_steps(self) -> None:
         tracker = SessionTracker()
         samples = []

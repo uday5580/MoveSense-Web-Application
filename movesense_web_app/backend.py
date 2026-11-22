@@ -211,8 +211,8 @@ class SessionTracker:
             if (
                 self._previous_smoothed >= self._previous_previous_smoothed
                 and self._previous_smoothed > self.smoothed
-                and self._previous_smoothed >= 1.2
-                and self._previous_smoothed - self._trough_since_peak >= 0.55
+                and self._previous_smoothed >= 0.5
+                and self._previous_smoothed - self._trough_since_peak >= 0.2
             ):
                 peak_at = self._previous_sample_at
                 if self._last_peak_at is None or peak_at - self._last_peak_at >= 0.28:
@@ -246,7 +246,7 @@ class SessionTracker:
     def _record_peak(self, now: float) -> None:
         if self._peak_times:
             interval = now - self._peak_times[-1]
-            if 0.3 <= interval <= 1.25:
+            if 0.25 <= interval <= 1.5:
                 self._cadence_intervals += 1
                 if self._cadence_intervals == 2:
                     self.steps += 3
