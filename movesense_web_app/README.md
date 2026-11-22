@@ -46,6 +46,8 @@ measurements.
 
 ## Deploy to Render
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/uday5580/MoveSense-Web-Application)
+
 The included `render.yaml` deploys the application over HTTPS, which is required
 for reliable smartphone motion-sensor access.
 
