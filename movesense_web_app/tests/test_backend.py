@@ -39,6 +39,31 @@ class SessionTrackerTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             tracker.process(MotionSample(x=0, y=0, z=9.8))
 
+    def test_stationary_samples_are_not_counted_as_steps(self) -> None:
+        tracker = SessionTracker()
+        tracker.start("phone")
+        for _ in range(60):
+            tracker.process(MotionSample(x=0, y=0, z=9.8))
+        snapshot = tracker.snapshot()
+        self.assertEqual(snapshot["steps"], 0)
+        self.assertEqual(snapshot["activity"], "Idle")
+
+    def test_repeated_movement_is_classified_as_walking_or_running(self) -> None:
+        tracker = SessionTracker()
+        tracker.start("demo")
+        walking_pattern = [9.8, 12.0, 10.0, 7.5]
+        for index in range(60):
+            tracker.process(
+                MotionSample(
+                    x=0,
+                    y=0,
+                    z=walking_pattern[index % len(walking_pattern)],
+                )
+            )
+        snapshot = tracker.snapshot()
+        self.assertGreater(snapshot["steps"], 0)
+        self.assertIn(snapshot["activity"], {"Walking", "Running"})
+
 
 if __name__ == "__main__":
     unittest.main()

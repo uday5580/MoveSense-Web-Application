@@ -146,6 +146,11 @@ class SessionTracker:
         self._last_dynamic = 0.0
         self._last_peak_at = 0.0
         self._magnitudes: deque[float] = deque(maxlen=18)
+        self._gravity = {"x": 0.0, "y": 0.0, "z": 9.8}
+        self._gravity_samples = 0
+        self._activity_candidate = "Idle"
+        self._activity_candidate_count = 0
+        self._start_time = 0.0
         self.samples: deque[dict[str, Any]] = deque(maxlen=80)
         self.activity = "Idle"
         self.latest = {"x": 0.0, "y": 0.0, "z": 0.0, "alpha": 0.0, "beta": 0.0, "gamma": 0.0}
@@ -166,6 +171,11 @@ class SessionTracker:
             self._last_dynamic = 0.0
             self._last_peak_at = 0.0
             self._magnitudes.clear()
+            self._gravity = {"x": 0.0, "y": 0.0, "z": 9.8}
+            self._gravity_samples = 0
+            self._activity_candidate = "Idle"
+            self._activity_candidate_count = 0
+            self._start_time = time.monotonic()
             self.samples.clear()
             self.activity = "Monitoring"
             self.last_error = ""
@@ -176,17 +186,71 @@ class SessionTracker:
                 raise HTTPException(status_code=409, detail="No sensor session is active.")
             self.latest = sample.model_dump()
             magnitude = math.sqrt(sample.x**2 + sample.y**2 + sample.z**2)
-            self.smoothed = self.smoothed * 0.78 + magnitude * 0.22
             now = time.monotonic()
-            dynamic = abs(self.smoothed - 9.8)
-            if dynamic > 1.5 and self._last_dynamic <= 1.5 and now - self._last_peak_at > 0.35:
+
+            # Adapt a gravity baseline to phone orientation.  This keeps a phone held
+            # vertically or horizontally from being mistaken for constant motion.
+            if self._gravity_samples < 25:
+                alpha = 0.35
+                self._gravity["x"] = self._gravity["x"] * (1 - alpha) + sample.x * alpha
+                self._gravity["y"] = self._gravity["y"] * (1 - alpha) + sample.y * alpha
+                self._gravity["z"] = self._gravity["z"] * (1 - alpha) + sample.z * alpha
+                self._gravity_samples += 1
+            else:
+                alpha = 0.015
+                self._gravity["x"] = self._gravity["x"] * (1 - alpha) + sample.x * alpha
+                self._gravity["y"] = self._gravity["y"] * (1 - alpha) + sample.y * alpha
+                self._gravity["z"] = self._gravity["z"] * (1 - alpha) + sample.z * alpha
+
+            dx = sample.x - self._gravity["x"]
+            dy = sample.y - self._gravity["y"]
+            dz = sample.z - self._gravity["z"]
+            vector_dynamic = math.sqrt(dx * dx + dy * dy + dz * dz)
+            # Before the baseline is calibrated, use the total-magnitude deviation
+            # so the first movement samples still contribute to the estimate.
+            dynamic = (
+                abs(magnitude - 9.8)
+                if self._gravity_samples < 25
+                else vector_dynamic
+            )
+            self.smoothed = self.smoothed * 0.72 + dynamic * 0.28
+
+            step_threshold = 1.15
+            if (
+                self.smoothed > step_threshold
+                and self._last_dynamic <= step_threshold
+                and now - self._last_peak_at > 0.32
+            ):
                 self.steps += 1
                 self.peaks += 1
                 self._last_peak_at = now
             self._last_dynamic = dynamic
-            self._magnitudes.append(abs(self.smoothed - 9.8))
+            self._magnitudes.append(dynamic)
+
             variation = sum(self._magnitudes) / len(self._magnitudes)
-            self.activity = "Running" if variation > 4.2 else "Walking" if variation > 1.35 else "Idle"
+            if self._gravity_samples < 25:
+                candidate = "Monitoring"
+            elif variation < 0.35 and self.steps == 0:
+                candidate = "Idle"
+            elif variation >= 2.2:
+                candidate = "Running"
+            elif variation >= 0.45 or self.steps > 0:
+                candidate = "Walking"
+            else:
+                candidate = "Idle"
+
+            if candidate == self._activity_candidate:
+                self._activity_candidate_count += 1
+            else:
+                self._activity_candidate = candidate
+                self._activity_candidate_count = 1
+
+            required = 22 if candidate == "Idle" else 6
+            if (
+                candidate != "Monitoring"
+                and self._activity_candidate_count >= required
+            ):
+                self.activity = candidate
             self.samples.append(
                 {
                     "time": datetime.now().astimezone().strftime("%H:%M:%S"),

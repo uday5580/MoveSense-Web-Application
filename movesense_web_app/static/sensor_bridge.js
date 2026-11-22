@@ -27,7 +27,7 @@
   }
 
   function onMotion(event) {
-    const acceleration = event.accelerationIncludingGravity || event.acceleration || {};
+    const acceleration = event.acceleration || event.accelerationIncludingGravity || {};
     const rotation = event.rotationRate || {};
     latestSample = {
       x: acceleration.x || 0,
