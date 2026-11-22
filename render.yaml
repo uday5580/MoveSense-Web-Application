@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: movesense-web
+    runtime: python
+    plan: free
+    buildCommand: cd movesense_web_app && pip install -r requirements.txt
+    startCommand: cd movesense_web_app && python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.9
+      - key: MOVESENSE_HOST
+        value: 0.0.0.0
